@@ -71,7 +71,9 @@ async function main(): Promise<void> {
       await sleep(5 * 60_000);
     }
     if (!stopping) {
-      const resumed = await realtime.loadSaved(cfg.pollIdleMaxSec * 1000);
+      await realtime.loadSaved(cfg.pollIdleMaxSec * 1000);
+      realtime.retain(poller.routeIds());
+      const resumed = realtime.all().length;
       if (resumed) app.log.info({ routes: resumed }, 'resumed route snapshots saved by the previous run');
       poller.start();
       app.log.info({ routes: poller.routeIds().length }, 'poller started');

@@ -136,6 +136,16 @@ export class RealtimeStore extends EventEmitter {
     }
   }
 
+  /** Forget routes that are no longer polled (e.g. ROUTES changed between runs). */
+  retain(routeIds: Iterable<string>): void {
+    const keep = new Set(routeIds);
+    for (const id of [...this.raw.keys()]) {
+      if (keep.has(id)) continue;
+      this.raw.delete(id);
+      this.snapshots.delete(id);
+    }
+  }
+
   get(routeId: string): RouteSnapshot | undefined {
     return this.snapshots.get(routeId);
   }

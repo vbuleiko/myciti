@@ -318,6 +318,7 @@ footer a {
 }
 
 @media (max-width: 720px) {
+  /* open: bottom sheet; closed: a small button in the top-left corner */
   .panel {
     top: auto;
     left: 8px;
@@ -328,6 +329,9 @@ footer a {
     height: 62vh;
   }
   .panel:not(.open) {
+    top: 10px;
+    bottom: auto;
+    right: auto;
     height: auto;
   }
   .panel:not(.open) .panel-toggle {
