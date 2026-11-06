@@ -23,6 +23,12 @@ function num(name: string, def: number, min?: number): number {
   return v;
 }
 
+function bool(name: string, def: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return def;
+  return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
+}
+
 function str(name: string, def: string): string {
   const raw = process.env[name];
   return raw === undefined || raw.trim() === '' ? def : raw.trim();
@@ -50,6 +56,14 @@ export interface Config {
   maxConcurrency: number;
   /** minimum gap between the starts of two requests to the site, ms */
   minRequestGapMs: number;
+  /** hard ceiling on requests to the site per rolling minute */
+  maxRequestsPerMin: number;
+  /** abandon responses larger than this (decoded) */
+  maxBodyMb: number;
+  /** when the site's average response time exceeds this, poll less often */
+  slowOriginMs: number;
+  /** ...up to this multiple of the normal interval */
+  slowOriginMaxFactor: number;
   requestTimeoutMs: number;
   backoffBaseSec: number;
   backoffMaxSec: number;
@@ -59,7 +73,13 @@ export interface Config {
   preDepartureMin: number;
   postArrivalMin: number;
   terminalMergeMaxGapMin: number;
+  /** hide buses whose snapshot is older than this (0 = never) */
+  maxDataAgeMin: number;
   corsOrigin: string;
+  /** concurrent /api/stream connections accepted */
+  maxSseClients: number;
+  /** believe X-Forwarded-* headers (only behind a reverse proxy you control) */
+  trustProxy: boolean;
 }
 
 export function loadConfig(): Config {
@@ -86,6 +106,10 @@ export function loadConfig(): Config {
     pollLeadSec: num('POLL_LEAD_SEC', 600, 0),
     maxConcurrency: Math.min(num('MAX_CONCURRENCY', 2, 1), 2),
     minRequestGapMs: num('MIN_REQUEST_GAP_MS', 1000, 250),
+    maxRequestsPerMin: Math.min(num('MAX_REQUESTS_PER_MIN', 45, 1), 60),
+    maxBodyMb: num('MAX_BODY_MB', 48, 1),
+    slowOriginMs: num('SLOW_ORIGIN_MS', 15_000, 1000),
+    slowOriginMaxFactor: num('SLOW_ORIGIN_MAX_FACTOR', 3, 1),
     requestTimeoutMs: num('REQUEST_TIMEOUT_MS', 45_000, 5_000),
     backoffBaseSec: num('BACKOFF_BASE_SEC', 30, 5),
     backoffMaxSec: num('BACKOFF_MAX_SEC', 1800, 60),
@@ -95,6 +119,9 @@ export function loadConfig(): Config {
     preDepartureMin: num('PRE_DEPARTURE_MIN', 5, 0),
     postArrivalMin: num('POST_ARRIVAL_MIN', 1, 0),
     terminalMergeMaxGapMin: num('TERMINAL_MERGE_MAX_GAP_MIN', 10, 0),
+    maxDataAgeMin: num('MAX_DATA_AGE_MIN', 20, 0),
     corsOrigin: str('CORS_ORIGIN', '*'),
+    maxSseClients: num('MAX_SSE_CLIENTS', 200, 1),
+    trustProxy: bool('TRUST_PROXY', false),
   };
 }

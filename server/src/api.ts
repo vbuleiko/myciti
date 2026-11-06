@@ -11,7 +11,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Config } from './config';
 import type { PoliteFetcher } from './http/fetcher';
 import type { RobotsGuard } from './http/robots';
-import type { Poller } from './poller';
+import { slowOriginFactor, type Poller } from './poller';
 import type { NetworkStore } from './stores/network-store';
 import { tripsInWindow, type RealtimeStore, type RouteSnapshot } from './stores/realtime-store';
 
@@ -26,12 +26,34 @@ export interface ApiDeps {
   startedAt: number;
 }
 
-function routeFilter(q: unknown): Set<string> | null {
-  const raw = (q as { routes?: string } | undefined)?.routes;
-  if (!raw) return null;
-  const s = new Set(raw.split(',').map((x) => x.trim()).filter(Boolean));
-  return s.size ? s : null;
+const ROUTE_ID_RE = /^[A-Za-z0-9_-]{1,16}$/;
+const MAX_FILTER_ROUTES = 200;
+
+/**
+ * `?routes=101,T01` -> set of route ids; null = no filter. Ids that do not look like route
+ * ids are dropped (nothing is ever echoed back), and a filter with no valid id matches nothing.
+ */
+export function routeFilter(q: unknown): Set<string> | null {
+  const raw = (q as { routes?: unknown } | undefined)?.routes;
+  if (typeof raw !== 'string' || raw === '') return null;
+  const ids = raw
+    .split(',', MAX_FILTER_ROUTES + 1)
+    .map((x) => x.trim())
+    .filter((x) => ROUTE_ID_RE.test(x))
+    .slice(0, MAX_FILTER_ROUTES);
+  return new Set(ids);
 }
+
+/** Value for Access-Control-Allow-Origin on the hijacked SSE response (null = no header). */
+export function corsAllowOrigin(configured: string, requestOrigin: string | undefined): string | null {
+  if (configured === '*') return '*';
+  if (!requestOrigin) return null;
+  const allowed = configured.split(',').map((x) => x.trim()).filter(Boolean);
+  return allowed.includes(requestOrigin) ? requestOrigin : null;
+}
+
+/** A client that stops reading gets this much buffered before it is dropped. */
+const SSE_MAX_BUFFERED_BYTES = 1_048_576;
 
 const median = (xs: number[]) => {
   if (!xs.length) return null;
@@ -59,7 +81,8 @@ export function registerApi(app: FastifyInstance, d: ApiDeps): { close: () => vo
   const routesMeta = (snaps: RouteSnapshot[]) =>
     Object.fromEntries(snaps.map((s) => [s.routeId, { fetchedAt: s.fetchedAt, day: s.day, serviceAdvisory: s.serviceAdvisory }]));
 
-  app.get('/api/trips/live', async (req) => {
+  app.get('/api/trips/live', async (req, reply) => {
+    reply.header('cache-control', 'no-store');
     const now = Date.now();
     const filter = routeFilter(req.query);
     const all = (req.query as { all?: string }).all === '1';
@@ -72,6 +95,7 @@ export function registerApi(app: FastifyInstance, d: ApiDeps): { close: () => vo
   // ---------------------------------------------------------------- /api/vehicles
   app.get('/api/vehicles', async (req, reply) => {
     if (!network.idx) return notReady(reply);
+    reply.header('cache-control', 'no-store');
     const idx = network.idx;
     const now = Date.now();
     const filter = routeFilter(req.query);
@@ -115,24 +139,54 @@ export function registerApi(app: FastifyInstance, d: ApiDeps): { close: () => vo
 
   // ---------------------------------------------------------------- /api/stream (SSE)
   const clients = new Set<FastifyReply['raw']>();
+  const drop = (res: FastifyReply['raw']) => {
+    clients.delete(res);
+    if (!res.destroyed) res.destroy();
+  };
   const send = (res: FastifyReply['raw'], event: string, data: unknown) => {
+    if (res.destroyed || res.writableEnded) {
+      clients.delete(res);
+      return;
+    }
+    // a client that stopped reading must not make the server buffer without bound
+    if (res.writableLength > SSE_MAX_BUFFERED_BYTES) {
+      drop(res);
+      return;
+    }
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+  const broadcast = (event: string, data: unknown) => {
+    if (clients.size === 0) return;
+    const payload = JSON.stringify(data);
+    for (const c of clients) send(c, event, JSON.parse(payload) as unknown);
   };
 
   app.get('/api/stream', (req, reply) => {
+    if (clients.size >= cfg.maxSseClients) {
+      return reply.code(503).header('retry-after', '30').header('cache-control', 'no-store').send({ error: 'too many stream clients' });
+    }
     reply.hijack();
     const res = reply.raw;
-    res.writeHead(200, {
+    const headers: Record<string, string> = {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
       connection: 'keep-alive',
       'x-accel-buffering': 'no',
-      'access-control-allow-origin': cfg.corsOrigin === '*' ? '*' : (req.headers.origin ?? ''),
-    });
+      'x-content-type-options': 'nosniff',
+    };
+    const allow = corsAllowOrigin(cfg.corsOrigin, req.headers.origin);
+    if (allow) {
+      headers['access-control-allow-origin'] = allow;
+      if (allow !== '*') headers.vary = 'origin';
+    }
+    res.writeHead(200, headers);
+    req.raw.socket?.setKeepAlive(true, 30_000);
+    req.raw.socket?.setNoDelay(true);
     res.write('retry: 5000\n\n');
     send(res, 'hello', { serverTime: Date.now() });
     clients.add(res);
     req.raw.on('close', () => clients.delete(res));
+    res.on('error', () => clients.delete(res));
   });
 
   const onRoute = (snap: RouteSnapshot) => {
@@ -144,21 +198,22 @@ export function registerApi(app: FastifyInstance, d: ApiDeps): { close: () => vo
       route: { fetchedAt: snap.fetchedAt, day: snap.day, serviceAdvisory: snap.serviceAdvisory },
       trips: tripsInWindow(snap.trips, now),
     };
-    for (const c of clients) send(c, 'route', payload);
+    const text = `event: route\ndata: ${JSON.stringify(payload)}\n\n`;
+    for (const c of clients) {
+      if (c.destroyed || c.writableEnded) clients.delete(c);
+      else if (c.writableLength > SSE_MAX_BUFFERED_BYTES) drop(c);
+      else c.write(text);
+    }
   };
   realtime.on('route', onRoute);
-  const onNetwork = () => {
-    for (const c of clients) send(c, 'network', { fetchedAt: network.status.fetchedAt, etag: network.etag });
-  };
+  const onNetwork = () => broadcast('network', { fetchedAt: network.status.fetchedAt, etag: network.etag });
   network.on('updated', onNetwork);
-  const heartbeat = setInterval(() => {
-    const now = Date.now();
-    for (const c of clients) send(c, 'ping', { serverTime: now });
-  }, 20_000);
+  const heartbeat = setInterval(() => broadcast('ping', { serverTime: Date.now() }), 20_000);
   heartbeat.unref();
 
   // ---------------------------------------------------------------- /api/health
-  app.get('/api/health', async () => {
+  app.get('/api/health', async (_req, reply) => {
+    reply.header('cache-control', 'no-store');
     const now = Date.now();
     const vehicles = network.idx ? estimateAll(realtime.allTrips(), now, stopDist, engine) : [];
     const byRoute = new Map<string, { active: number; suspect: number; delays: number[] }>();
@@ -204,6 +259,8 @@ export function registerApi(app: FastifyInstance, d: ApiDeps): { close: () => vo
         warnings: snap?.warnings ?? [],
       };
     }
+    const fetcherStats = d.fetcher.getStats();
+    const slowFactor = slowOriginFactor(fetcherStats.avgDurationMs, cfg.slowOriginMs, cfg.slowOriginMaxFactor);
     const status = !network.network ? 'error' : errors || stale || network.status.lastError ? 'degraded' : 'ok';
     return {
       status,
@@ -216,7 +273,7 @@ export function registerApi(app: FastifyInstance, d: ApiDeps): { close: () => vo
         warnings: network.status.warnings.length,
       },
       robots: { url: d.robots.url, ...d.robots.status },
-      fetcher: d.fetcher.getStats(),
+      fetcher: { ...fetcherStats, slowOriginFactor: Math.round(slowFactor * 100) / 100 },
       sseClients: clients.size,
       config: {
         routes: cfg.routes.length ? cfg.routes : 'all',
@@ -225,6 +282,10 @@ export function registerApi(app: FastifyInstance, d: ApiDeps): { close: () => vo
         pollIdleMaxSec: cfg.pollIdleMaxSec,
         maxConcurrency: cfg.maxConcurrency,
         minRequestGapMs: cfg.minRequestGapMs,
+        maxRequestsPerMin: cfg.maxRequestsPerMin,
+        slowOriginMs: cfg.slowOriginMs,
+        maxDataAgeMin: cfg.maxDataAgeMin,
+        maxSseClients: cfg.maxSseClients,
       },
       routes,
     };
@@ -235,7 +296,7 @@ export function registerApi(app: FastifyInstance, d: ApiDeps): { close: () => vo
       clearInterval(heartbeat);
       realtime.off('route', onRoute);
       network.off('updated', onNetwork);
-      for (const c of clients) c.end();
+      for (const c of clients) if (!c.destroyed) c.end();
       clients.clear();
     },
   };

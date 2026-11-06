@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { FetchError, parseRetryAfter, PoliteFetcher } from '../src/http/fetcher';
+import { FetchError, parseRetryAfter, PoliteFetcher, readBodyLimited, type FetcherOptions } from '../src/http/fetcher';
 import { RobotsGuard } from '../src/http/robots';
 
-function harness(responder: (url: string) => { status: number; body?: string; headers?: Record<string, string> }) {
+function harness(
+  responder: (url: string) => { status: number; body?: string; headers?: Record<string, string>; finalUrl?: string },
+  extra: Partial<FetcherOptions> = {},
+) {
   let t = 1_000_000;
   let active = 0;
   let maxActive = 0;
@@ -14,7 +17,9 @@ function harness(responder: (url: string) => { status: number; body?: string; he
     await new Promise((r) => setTimeout(r, 2));
     active--;
     const r = responder(url);
-    return new Response(r.body ?? 'ok', { status: r.status, headers: r.headers });
+    const res = new Response(r.body ?? 'ok', { status: r.status, headers: r.headers });
+    Object.defineProperty(res, 'url', { value: r.finalUrl ?? url });
+    return res;
   }) as unknown as typeof fetch;
   const robots = new RobotsGuard('https://example.test', 'ua', 'myciti-live-map');
   robots.setRules('User-agent: *\nDisallow: /private/\n');
@@ -30,6 +35,7 @@ function harness(responder: (url: string) => { status: number; body?: string; he
         await new Promise((r) => setTimeout(r, 0));
         t += ms;
       },
+      ...extra,
     },
     robots,
   );
@@ -67,6 +73,36 @@ describe('PoliteFetcher', () => {
     const h = harness(() => ({ status: 502 }));
     for (let i = 0; i < 3; i++) await h.fetcher.get('https://example.test/x').catch(() => undefined);
     expect(h.fetcher.getStats().hostPausedUntil).toBeGreaterThan(h.t + 20_000);
+  });
+
+  it('keeps to a per-minute budget', async () => {
+    const h = harness(() => ({ status: 200 }), { requestsPerMinute: 2 });
+    const res = await Promise.all([1, 2, 3].map((i) => h.fetcher.get(`https://example.test/p${i}`)));
+    const starts = res.map((r) => r.startedAt).sort((a, b) => a - b);
+    expect(starts[1]! - starts[0]!).toBeLessThan(60_000);
+    expect(starts[2]! - starts[0]!).toBeGreaterThanOrEqual(60_000);
+    expect(h.fetcher.getStats().requestsLastMinute).toBeGreaterThanOrEqual(1);
+  });
+
+  it('abandons oversized responses', async () => {
+    const h = harness(() => ({ status: 200, body: 'x'.repeat(5000) }), { maxBodyBytes: 1000 });
+    await expect(h.fetcher.get('https://example.test/big')).rejects.toMatchObject({ kind: 'too-large' });
+    expect(h.fetcher.getStats().errors).toBe(1);
+    const r = new Response('small');
+    expect((await readBodyLimited(r, 100)).text).toBe('small');
+  });
+
+  it('refuses redirects that leave the host', async () => {
+    const h = harness((url) => (url.endsWith('/away') ? { status: 200, finalUrl: 'https://elsewhere.test/x' } : { status: 200 }));
+    await expect(h.fetcher.get('https://example.test/away')).rejects.toMatchObject({ kind: 'redirect' });
+    await expect(h.fetcher.get('https://example.test/home')).resolves.toMatchObject({ status: 200 });
+  });
+
+  it('tracks the average response time', async () => {
+    const h = harness(() => ({ status: 200 }));
+    expect(h.fetcher.getStats().avgDurationMs).toBeNull();
+    await h.fetcher.get('https://example.test/a');
+    expect(h.fetcher.getStats().avgDurationMs).not.toBeNull();
   });
 
   it('parses Retry-After', () => {

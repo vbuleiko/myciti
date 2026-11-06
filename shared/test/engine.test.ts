@@ -103,6 +103,14 @@ describe('estimateVehicle', () => {
   );
   const t1 = trips.get('T1')!;
 
+  it('hides a bus once its snapshot is older than maxDataAgeMs', () => {
+    const now = sast('2026-11-06T10:02:00');
+    const stale = { ...t1, fetchedAt: now - 21 * MIN };
+    expect(estimateVehicle(stale, now)).toBeNull();
+    expect(estimateVehicle(stale, now, { maxDataAgeMs: 0 })).not.toBeNull();
+    expect(estimateVehicle({ ...t1, fetchedAt: now - 19 * MIN }, now)).not.toBeNull();
+  });
+
   it('interpolates between the bracketing stops along the shape', () => {
     const e = estimateVehicle(t1, sast('2026-11-06T10:02:00'))!;
     expect(e.state).toBe('moving');

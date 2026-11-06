@@ -1,4 +1,11 @@
-import { DEFAULT_ENGINE_OPTIONS, indexNetwork, type EngineOptions, type NetworkIndex, type PreparedTrip } from '@myciti/shared';
+import {
+  ClockSync,
+  DEFAULT_ENGINE_OPTIONS,
+  indexNetwork,
+  type EngineOptions,
+  type NetworkIndex,
+  type PreparedTrip,
+} from '@myciti/shared';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchLive, fetchNetwork, openStream, type NetworkPayload, type RouteMeta } from './api';
 
@@ -9,7 +16,7 @@ export interface LiveData {
   tripsRef: React.RefObject<Map<string, PreparedTrip[]>>;
   routeMeta: Record<string, RouteMeta>;
   engine: EngineOptions;
-  /** server clock - local clock, ms */
+  /** server clock - local clock, ms (median of recent samples, see ClockSync) */
   clockOffsetRef: React.RefObject<number>;
   connected: boolean;
   error: string | null;
@@ -17,6 +24,9 @@ export interface LiveData {
   version: number;
   lastUpdateAt: number | null;
 }
+
+/** After this long without any server message the page re-syncs when it becomes visible again. */
+const RESYNC_AFTER_MS = 45_000;
 
 export function useLiveData(): LiveData {
   const [network, setNetwork] = useState<NetworkPayload | null>(null);
@@ -28,12 +38,15 @@ export function useLiveData(): LiveData {
   const [lastUpdateAt, setLastUpdateAt] = useState<number | null>(null);
   const tripsRef = useRef(new Map<string, PreparedTrip[]>());
   const clockOffsetRef = useRef(0);
+  const clockRef = useRef(new ClockSync());
+  const lastMessageRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+    let liveInFlight = false;
     const setClock = (serverTime: number) => {
-      // keep the smallest observed offset drift-free: plain assignment is fine at this precision
-      clockOffsetRef.current = serverTime - Date.now();
+      clockOffsetRef.current = clockRef.current.observe(serverTime);
+      lastMessageRef.current = Date.now();
     };
 
     const loadNetwork = async () => {
@@ -50,6 +63,8 @@ export function useLiveData(): LiveData {
     };
 
     const loadLive = async () => {
+      if (liveInFlight) return;
+      liveInFlight = true;
       try {
         const live = await fetchLive();
         if (cancelled) return;
@@ -67,7 +82,9 @@ export function useLiveData(): LiveData {
         setVersion((v) => v + 1);
         setError(null);
       } catch (e) {
-        setError(`Нет данных о рейсах: ${(e as Error).message}`);
+        if (!cancelled) setError(`Нет данных о рейсах: ${(e as Error).message}`);
+      } finally {
+        liveInFlight = false;
       }
     };
 
@@ -89,10 +106,20 @@ export function useLiveData(): LiveData {
     });
     // safety net in case events were missed
     const resync = setInterval(() => void loadLive(), 5 * 60_000);
+    // a tab that was in the background (or a phone that was asleep) catches up at once
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (Date.now() - lastMessageRef.current > RESYNC_AFTER_MS) void loadLive();
+    };
+    const onOnline = () => void loadLive();
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', onOnline);
     return () => {
       cancelled = true;
       close();
       clearInterval(resync);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('online', onOnline);
     };
   }, []);
 

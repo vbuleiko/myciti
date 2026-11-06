@@ -7,6 +7,12 @@ export interface FetcherOptions {
   maxConcurrency: number;
   /** min gap between request starts, ms */
   minGapMs: number;
+  /** hard ceiling on request starts per rolling minute (0 = none) */
+  requestsPerMinute?: number;
+  /** responses larger than this (decoded bytes) are abandoned */
+  maxBodyBytes?: number;
+  /** only this host may answer (after redirects); derived from the first URL when omitted */
+  host?: string;
   /** host-wide pause after 429 without Retry-After, ms (doubles on repeats) */
   rateLimitPauseMs?: number;
   /** pause the whole host after this many consecutive failures */
@@ -27,10 +33,12 @@ export interface FetchResult {
   durationMs: number;
 }
 
+export type FetchErrorKind = 'http' | 'timeout' | 'network' | 'robots' | 'redirect' | 'too-large';
+
 export class FetchError extends Error {
   constructor(
     message: string,
-    readonly kind: 'http' | 'timeout' | 'network' | 'robots',
+    readonly kind: FetchErrorKind,
     readonly status: number | null = null,
     /** suggested wait before retrying, ms */
     readonly retryAfterMs: number | null = null,
@@ -48,6 +56,10 @@ export interface FetcherStats {
   hostPausedUntil: number;
   consecutiveHostFailures: number;
   lastRequestAt: number | null;
+  /** exponential moving average of the response time of completed requests, ms */
+  avgDurationMs: number | null;
+  /** request starts in the last rolling minute */
+  requestsLastMinute: number;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -61,20 +73,46 @@ export function parseRetryAfter(v: string | null, now: number): number | null {
   return Number.isFinite(t) ? Math.max(0, t - now) : null;
 }
 
+/** Read a response body as UTF-8, giving up once it exceeds `maxBytes` decoded bytes. */
+export async function readBodyLimited(res: Response, maxBytes: number): Promise<{ text: string; bytes: number }> {
+  if (!res.body) {
+    const text = await res.text();
+    return { text, bytes: Buffer.byteLength(text) };
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new FetchError(`response larger than ${Math.round(maxBytes / 1_048_576)} MB`, 'too-large');
+    }
+    chunks.push(value);
+  }
+  return { text: Buffer.concat(chunks).toString('utf8'), bytes: total };
+}
+
 /**
  * A deliberately slow HTTP client for one host: robots.txt check, at most N parallel
- * requests, a minimum gap between request starts, timeouts, and a host-wide pause after
- * 429 responses or repeated failures.
+ * requests, a minimum gap between request starts, a per-minute budget, timeouts, a size cap,
+ * and a host-wide pause after 429 responses or repeated failures. Redirects that leave the
+ * host are refused, so the parser never sees a page from somewhere else.
  */
 export class PoliteFetcher {
   private active = 0;
   private waiters: (() => void)[] = [];
   private turn: Promise<void> = Promise.resolve();
   private lastStart = 0;
+  private recentStarts: number[] = [];
   private hostPausedUntil = 0;
   private consecutiveFailures = 0;
   private rateLimitStreak = 0;
-  private readonly o: Required<Omit<FetcherOptions, 'fetchImpl'>> & { fetchImpl: typeof fetch };
+  private avgDurationMs: number | null = null;
+  private host: string | null;
+  private readonly o: Required<Omit<FetcherOptions, 'fetchImpl' | 'host'>> & { fetchImpl: typeof fetch };
   readonly stats = { requests: 0, errors: 0, bytes: 0, lastRequestAt: null as number | null };
 
   constructor(
@@ -82,6 +120,8 @@ export class PoliteFetcher {
     private readonly robots: RobotsGuard | null,
   ) {
     this.o = {
+      requestsPerMinute: 0,
+      maxBodyBytes: 48 * 1_048_576,
       rateLimitPauseMs: 120_000,
       hostFailureThreshold: 3,
       maxHostPauseMs: 30 * 60_000,
@@ -90,14 +130,18 @@ export class PoliteFetcher {
       sleep: defaultSleep,
       ...opts,
     };
+    this.host = opts.host ?? null;
   }
 
   getStats(): FetcherStats {
+    const now = this.o.now();
     return {
       ...this.stats,
       inFlight: this.active,
       hostPausedUntil: this.hostPausedUntil,
       consecutiveHostFailures: this.consecutiveFailures,
+      avgDurationMs: this.avgDurationMs === null ? null : Math.round(this.avgDurationMs),
+      requestsLastMinute: this.recentStarts.filter((t) => t > now - 60_000).length,
     };
   }
 
@@ -121,6 +165,15 @@ export class PoliteFetcher {
     this.waiters.shift()?.();
   }
 
+  /** Earliest moment a new request may start given the per-minute budget. */
+  private budgetWaitMs(now: number): number {
+    const budget = this.o.requestsPerMinute;
+    if (budget <= 0) return 0;
+    this.recentStarts = this.recentStarts.filter((t) => t > now - 60_000);
+    if (this.recentStarts.length < budget) return 0;
+    return this.recentStarts[this.recentStarts.length - budget]! + 60_000 - now;
+  }
+
   /** Serialise request starts so that they are at least gapMs apart and respect host pauses. */
   private async waitForTurn(): Promise<number> {
     const prev = this.turn;
@@ -130,11 +183,12 @@ export class PoliteFetcher {
     try {
       for (;;) {
         const now = this.o.now();
-        const wait = Math.max(this.lastStart + this.gapMs(), this.hostPausedUntil) - now;
+        const wait = Math.max(this.lastStart + this.gapMs(), this.hostPausedUntil, now + this.budgetWaitMs(now)) - now;
         if (wait <= 0) break;
         await this.o.sleep(wait);
       }
       this.lastStart = this.o.now();
+      this.recentStarts.push(this.lastStart);
       return this.lastStart;
     } finally {
       done();
@@ -154,10 +208,15 @@ export class PoliteFetcher {
     }
   }
 
+  private noteDuration(ms: number): void {
+    this.avgDurationMs = this.avgDurationMs === null ? ms : this.avgDurationMs * 0.7 + ms * 0.3;
+  }
+
   async get(url: string): Promise<FetchResult> {
     if (this.robots && !this.robots.isAllowed(url)) {
       throw new FetchError(`blocked by robots.txt (${this.robots.status.state})`, 'robots');
     }
+    const wantHost = this.host ?? (this.host = safeHost(url));
     await this.acquire();
     try {
       const started = await this.waitForTurn();
@@ -165,6 +224,7 @@ export class PoliteFetcher {
       this.stats.lastRequestAt = started;
       let res: Response;
       let body: string;
+      let bytes: number;
       try {
         res = await this.o.fetchImpl(url, {
           headers: {
@@ -175,9 +235,15 @@ export class PoliteFetcher {
           redirect: 'follow',
           signal: AbortSignal.timeout(this.o.timeoutMs),
         });
-        body = await res.text();
+        const finalHost = res.url ? safeHost(res.url) : wantHost;
+        if (wantHost && finalHost && finalHost !== wantHost) {
+          await res.body?.cancel().catch(() => undefined);
+          throw new FetchError(`redirected off-site to ${finalHost}`, 'redirect', res.status);
+        }
+        ({ text: body, bytes } = await readBodyLimited(res, this.o.maxBodyBytes));
       } catch (e) {
         this.noteFailure();
+        if (e instanceof FetchError) throw e;
         const err = e as Error;
         const timeout = err.name === 'TimeoutError' || err.name === 'AbortError';
         throw new FetchError(
@@ -186,7 +252,7 @@ export class PoliteFetcher {
         );
       }
       const durationMs = this.o.now() - started;
-      const bytes = Buffer.byteLength(body);
+      this.noteDuration(durationMs);
       this.stats.bytes += bytes;
 
       if (res.status === 429 || res.status === 503) {
@@ -211,5 +277,13 @@ export class PoliteFetcher {
     } finally {
       this.release();
     }
+  }
+}
+
+function safeHost(url: string): string | null {
+  try {
+    return new URL(url).host.toLowerCase();
+  } catch {
+    return null;
   }
 }

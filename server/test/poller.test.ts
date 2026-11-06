@@ -1,6 +1,6 @@
 import type { PreparedTrip } from '@myciti/shared';
 import { describe, expect, it } from 'vitest';
-import { planNextPoll, type PlanConfig } from '../src/poller';
+import { planNextPoll, slowOriginFactor, type PlanConfig } from '../src/poller';
 import { tripsInWindow } from '../src/stores/realtime-store';
 
 const sast = (iso: string) => Date.parse(`${iso}+02:00`);
@@ -76,6 +76,16 @@ describe('planNextPoll', () => {
     const p = planNextPoll([], sast('2026-11-06T12:00:00'), cfg);
     expect(p.mode).toBe('night');
     expect(p.delayMs).toBeLessThanOrEqual(12 * 60 * MIN);
+  });
+});
+
+describe('slowOriginFactor', () => {
+  it('stretches the interval in proportion to how slow the site is, within bounds', () => {
+    expect(slowOriginFactor(null, 15_000, 3)).toBe(1);
+    expect(slowOriginFactor(10_000, 15_000, 3)).toBe(1);
+    expect(slowOriginFactor(30_000, 15_000, 3)).toBe(2);
+    expect(slowOriginFactor(90_000, 15_000, 3)).toBe(3);
+    expect(slowOriginFactor(90_000, 0, 3)).toBe(1);
   });
 });
 

@@ -40,7 +40,8 @@ function saveStored(f: MapFilters, allIds: string[]): void {
 
 export function App() {
   const data = useLiveData();
-  const stored = loadStored();
+  // read once: this component re-renders every second while the map is live
+  const [stored] = useState(loadStored);
   const [filters, setFiltersState] = useState<MapFilters>({
     routes: new Set(),
     showStops: stored?.showStops ?? true,

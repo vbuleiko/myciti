@@ -1,6 +1,18 @@
 import { estimateAll, stopDistanceM, type EngineOptions, type NetworkIndex, type PreparedTrip } from '@myciti/shared';
-import maplibregl, { type GeoJSONSource, type MapLayerMouseEvent } from 'maplibre-gl';
+import {
+  AttributionControl,
+  GeolocateControl,
+  MapLibreMap,
+  NavigationControl,
+  Popup,
+  setWorkerUrl,
+  type GeoJSONSource,
+  type MapLayerMouseEvent,
+} from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+// MapLibre 6 looks for its worker next to its own module, which does not exist once Vite has
+// bundled it; hand it the worker file as a same-origin asset instead (CSP: worker-src 'self').
+import mapWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
 import { useEffect, useRef, useState } from 'react';
 import type { NetworkPayload } from './api';
 import { VehicleAnimator, type AnimatedVehicle } from './animator';
@@ -25,22 +37,26 @@ interface Props {
   onStats: (s: { total: number; suspect: number; byRoute: Record<string, number> }) => void;
 }
 
+setWorkerUrl(mapWorkerUrl);
+
 const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
 const CAPE_TOWN: [number, number] = [18.47, -33.93];
 const FRAME_MS = 50; // ~20 fps is plenty for buses
+/** when a frame costs this much CPU, animate more slowly instead of stuttering */
+const SLOW_FRAME_MS = 20;
 const SUSPECT_COLOR = '#8c8c8c';
 
 const emptyFC = (): GeoJSON.FeatureCollection => ({ type: 'FeatureCollection', features: [] });
 
 export function MapView({ network, idx, tripsRef, engine, clockOffsetRef, filters, onStats }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<maplibregl.Map | null>(null);
+  const mapRef = useRef<MapLibreMap | null>(null);
   const readyRef = useRef(false);
   const animatorRef = useRef<VehicleAnimator | null>(null);
   const filtersRef = useRef(filters);
   const engineRef = useRef(engine);
   const selectedRef = useRef<string | null>(null);
-  const popupRef = useRef<maplibregl.Popup | null>(null);
+  const popupRef = useRef<Popup | null>(null);
   const lastPopupHtml = useRef('');
   const vehiclesRef = useRef<AnimatedVehicle[]>([]);
   const onStatsRef = useRef(onStats);
@@ -55,7 +71,7 @@ export function MapView({ network, idx, tripsRef, engine, clockOffsetRef, filter
 
   // ---------------------------------------------------------------- map init
   useEffect(() => {
-    const map = new maplibregl.Map({
+    const map = new MapLibreMap({
       container: containerRef.current!,
       style: STYLE_URL,
       center: CAPE_TOWN,
@@ -64,18 +80,18 @@ export function MapView({ network, idx, tripsRef, engine, clockOffsetRef, filter
       maxPitch: 0,
     });
     map.addControl(
-      new maplibregl.AttributionControl({
+      new AttributionControl({
         compact: true,
         customAttribution:
           'Данные о маршрутах: <a href="https://www.myciti.org.za" target="_blank" rel="noopener">MyCiTi / City of Cape Town</a> · позиции расчётные',
       }),
     );
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
-    map.addControl(new maplibregl.GeolocateControl({ trackUserLocation: false }), 'top-right');
+    map.addControl(new NavigationControl({ showCompass: false }), 'top-right');
+    map.addControl(new GeolocateControl({ trackUserLocation: false }), 'top-right');
     map.touchZoomRotate.disableRotation();
     map.dragRotate.disable();
     mapRef.current = map;
-    if (import.meta.env.DEV) (window as unknown as { __mycitiMap?: maplibregl.Map }).__mycitiMap = map;
+    if (import.meta.env.DEV) (window as unknown as { __mycitiMap?: MapLibreMap }).__mycitiMap = map;
 
     map.on('load', () => {
       const icon = busMarkerSdf(64, 2);
@@ -195,7 +211,7 @@ export function MapView({ network, idx, tripsRef, engine, clockOffsetRef, filter
     selectedRef.current = key;
     lastPopupHtml.current = '';
     const v = vehiclesRef.current.find((x) => x.trip.key === key);
-    const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '320px', offset: 14 })
+    const popup = new Popup({ closeButton: true, closeOnClick: true, maxWidth: '320px', offset: 14 })
       .setLngLat(v ? [v.lng, v.lat] : map.getCenter())
       .setHTML('…')
       .addTo(map);
@@ -294,7 +310,7 @@ export function MapView({ network, idx, tripsRef, engine, clockOffsetRef, filter
       `<div class="pp-routes">${routes}</div>` +
       (rows ? `<div class="pp-sub">Ближайшие автобусы (по живым данным)</div>${rows}` : `<div class="pp-sub">Нет отслеживаемых автобусов в ближайшие 90 мин</div>`) +
       `<div class="pp-note">Время расчётное; рейсы без живых данных не показаны.</div></div>`;
-    popupRef.current = new maplibregl.Popup({ maxWidth: '340px', offset: 8 }).setLngLat(coords).setHTML(html).addTo(map);
+    popupRef.current = new Popup({ maxWidth: '340px', offset: 8 }).setLngLat(coords).setHTML(html).addTo(map);
   }
 
   // ---------------------------------------------------------------- static layers
@@ -337,10 +353,16 @@ export function MapView({ network, idx, tripsRef, engine, clockOffsetRef, filter
     let raf = 0;
     let last = 0;
     let lastStats = 0;
+    // adaptive cadence: a weak device (or hundreds of buses) gets fewer, cheaper frames
+    let frameMs = FRAME_MS;
+    let cost = 0;
+    const reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let lastFeatureCount = -1;
     const loop = (ts: number) => {
       raf = requestAnimationFrame(loop);
-      if (ts - last < FRAME_MS) return;
+      if (ts - last < (reducedMotion ? 250 : frameMs)) return;
       last = ts;
+      const t0 = performance.now();
       const map = mapRef.current;
       const anim = animatorRef.current;
       if (!map || !readyRef.current || !anim || !idx) return;
@@ -370,7 +392,11 @@ export function MapView({ network, idx, tripsRef, engine, clockOffsetRef, filter
           geometry: { type: 'Point', coordinates: [v.lng, v.lat] },
         };
       });
-      (map.getSource('vehicles') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features });
+      // nothing on the map and nothing before: skip the (not free) GeoJSON upload
+      if (features.length > 0 || lastFeatureCount !== 0) {
+        (map.getSource('vehicles') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features });
+      }
+      lastFeatureCount = features.length;
 
       const sel = selectedRef.current;
       if (sel) {
@@ -395,6 +421,9 @@ export function MapView({ network, idx, tripsRef, engine, clockOffsetRef, filter
         }
         onStatsRef.current({ total: everyBus.length, suspect, byRoute });
       }
+      const spent = performance.now() - t0;
+      cost = cost * 0.8 + spent * 0.2;
+      frameMs = cost > SLOW_FRAME_MS * 2 ? 150 : cost > SLOW_FRAME_MS ? 100 : FRAME_MS;
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);

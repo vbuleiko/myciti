@@ -1,5 +1,19 @@
+x-hardened: &hardened
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  read_only: true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   server:
+    <<: *hardened
     build:
       context: .
       dockerfile: server/Dockerfile
@@ -8,22 +22,36 @@ services:
         required: false
     environment:
       DATA_DIR: /data
+      # only nginx talks to the server, so its X-Forwarded-For can be trusted
+      TRUST_PROXY: "true"
     volumes:
       - myciti-data:/data
-    restart: unless-stopped
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     # uncomment to expose the API directly
     # ports:
     #   - "3000:3000"
 
   web:
+    <<: *hardened
     build:
       context: .
       dockerfile: web/Dockerfile
     ports:
-      - "${WEB_PORT:-8080}:80"
+      - "${WEB_PORT:-8080}:8080"
+    tmpfs:
+      - /tmp
     depends_on:
-      - server
-    restart: unless-stopped
+      server:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
 volumes:
   myciti-data:

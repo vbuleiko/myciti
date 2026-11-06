@@ -12,6 +12,8 @@ export function estimateVehicle(
 ): VehicleEstimate | null {
   if (!trip.live) return null;
   const opts = { ...DEFAULT_ENGINE_OPTIONS, ...options };
+  // a forecast from a snapshot that is too old is not worth drawing
+  if (opts.maxDataAgeMs > 0 && now - trip.fetchedAt > opts.maxDataAgeMs) return null;
   const s = trip.stops;
   const n = s.length;
   if (n === 0) return null;

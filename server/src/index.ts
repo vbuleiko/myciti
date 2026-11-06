@@ -1,7 +1,7 @@
 import compress from '@fastify/compress';
 import cors from '@fastify/cors';
 import { DEFAULT_ENGINE_OPTIONS, type EngineOptions } from '@myciti/shared';
-import Fastify from 'fastify';
+import Fastify, { LogController, type FastifyError } from 'fastify';
 import { join } from 'node:path';
 import { registerApi } from './api';
 import { loadConfig } from './config';
@@ -16,9 +16,32 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function main(): Promise<void> {
   const cfg = loadConfig();
   const startedAt = Date.now();
-  const app = Fastify({ logger: { level: cfg.logLevel }, disableRequestLogging: true });
-  await app.register(cors, { origin: cfg.corsOrigin === '*' ? true : cfg.corsOrigin.split(',') });
+  const app = Fastify({
+    logger: { level: cfg.logLevel },
+    logController: new LogController({ disableRequestLogging: true }),
+    // the API is read-only: no bodies, short URLs, no slow-loris headers
+    bodyLimit: 16 * 1024,
+    maxParamLength: 200,
+    requestTimeout: 30_000,
+    keepAliveTimeout: 65_000,
+    // X-Forwarded-For is only meaningful behind the bundled nginx
+    trustProxy: cfg.trustProxy,
+  });
+  await app.register(cors, {
+    origin: cfg.corsOrigin === '*' ? true : cfg.corsOrigin.split(',').map((s) => s.trim()).filter(Boolean),
+    methods: ['GET', 'HEAD', 'OPTIONS'],
+  });
   await app.register(compress, { threshold: 1024 });
+  app.addHook('onSend', async (_req, reply) => {
+    reply.header('x-content-type-options', 'nosniff');
+  });
+  app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: 'not found' }));
+  app.setErrorHandler((err: FastifyError, req, reply) => {
+    const status = err.statusCode && err.statusCode >= 400 ? err.statusCode : 500;
+    if (status >= 500) req.log.error({ err }, 'request failed');
+    // never leak stack traces or internal messages for server-side failures
+    reply.code(status).send({ error: status >= 500 ? 'internal error' : err.message });
+  });
 
   const engine: EngineOptions = {
     ...DEFAULT_ENGINE_OPTIONS,
@@ -26,6 +49,7 @@ async function main(): Promise<void> {
     postArrivalMs: cfg.postArrivalMin * 60_000,
     suspectThresholdMs: cfg.suspectThresholdMin * 60_000,
     terminalMergeMaxGapMs: cfg.terminalMergeMaxGapMin * 60_000,
+    maxDataAgeMs: cfg.maxDataAgeMin * 60_000,
   };
 
   const robots = new RobotsGuard(cfg.baseUrl, cfg.userAgent, cfg.robotsAgent);
@@ -35,6 +59,9 @@ async function main(): Promise<void> {
       timeoutMs: cfg.requestTimeoutMs,
       maxConcurrency: cfg.maxConcurrency,
       minGapMs: cfg.minRequestGapMs,
+      requestsPerMinute: cfg.maxRequestsPerMin,
+      maxBodyBytes: cfg.maxBodyMb * 1_048_576,
+      host: new URL(cfg.baseUrl).host.toLowerCase(),
     },
     robots,
   );

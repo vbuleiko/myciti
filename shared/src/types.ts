@@ -139,6 +139,12 @@ export interface EngineOptions {
   terminalMergeMaxGapMs: number;
   /** stops considered the same terminal if this close (metres) */
   terminalMergeMaxDistM: number;
+  /**
+   * Hide a bus once the snapshot it comes from is older than this (0 = never). Between
+   * polls a position is a forecast from the last snapshot; after an outage the forecast is
+   * fiction, so stop drawing it.
+   */
+  maxDataAgeMs: number;
 }
 
 export const DEFAULT_ENGINE_OPTIONS: EngineOptions = {
@@ -147,4 +153,5 @@ export const DEFAULT_ENGINE_OPTIONS: EngineOptions = {
   suspectThresholdMs: 30 * 60_000,
   terminalMergeMaxGapMs: 10 * 60_000,
   terminalMergeMaxDistM: 250,
+  maxDataAgeMs: 20 * 60_000,
 };

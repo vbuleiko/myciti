@@ -23,6 +23,16 @@ export interface PollPlan {
 }
 
 /**
+ * How much to stretch the polling interval when the site answers slowly: generating a route
+ * page costs the origin seconds of CPU, so when its average response time climbs past
+ * `slowMs` we ask proportionally less often (up to `maxFactor`).
+ */
+export function slowOriginFactor(avgDurationMs: number | null, slowMs: number, maxFactor: number): number {
+  if (avgDurationMs === null || slowMs <= 0 || avgDurationMs <= slowMs) return 1;
+  return Math.min(maxFactor, avgDurationMs / slowMs);
+}
+
+/**
  * Decide when to poll a route page again, from its latest snapshot:
  * - buses being tracked (or service running on a route that has live data) -> every pollLive
  * - service running, but the route has no live data at all today -> every pollUntracked
@@ -204,9 +214,18 @@ export class Poller {
       const plan = planNextPoll(snap?.trips ?? [], this.now(), this.planCfg());
       state.mode = plan.mode;
       state.reason = plan.reason;
+      // when the site is slow, stretch the short intervals (the long ones are long already)
+      let delayMs = plan.delayMs;
+      if (plan.mode === 'live' || plan.mode === 'untracked') {
+        const factor = slowOriginFactor(this.fetcher.getStats().avgDurationMs, this.cfg.slowOriginMs, this.cfg.slowOriginMaxFactor);
+        if (factor > 1.05) {
+          delayMs = Math.round(delayMs * factor);
+          state.reason = `${plan.reason}; site is slow, interval x${factor.toFixed(1)}`;
+        }
+      }
       // anchor the cadence to the actual request start: a page is never requested more often
       // than plan.delayMs (>= POLL_LIVE_SEC >= 60 s), and polls stay evenly spread
-      state.nextDueAt = Math.max(res.startedAt + plan.delayMs, this.now() + 5_000);
+      state.nextDueAt = Math.max(res.startedAt + delayMs, this.now() + 5_000);
       this.log.debug({ route: state.routeId, mode: plan.mode, ms: res.durationMs, kb: Math.round(res.bytes / 1024) }, 'route polled');
     } catch (e) {
       const err = e as Error;

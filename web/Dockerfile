@@ -11,7 +11,11 @@ COPY shared shared
 COPY web web
 RUN pnpm --filter @myciti/web run build
 
-FROM nginx:1.27-alpine
+# unprivileged image: nginx runs as uid 101 and listens on 8080, no capabilities needed
+FROM nginxinc/nginx-unprivileged:1.27-alpine
+COPY web/nginx-headers.conf /etc/nginx/includes/headers.conf
 COPY web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/web/dist /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+  CMD wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1
