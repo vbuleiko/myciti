@@ -42,6 +42,23 @@ export function circularStart(minutes: number[]): number {
   return start;
 }
 
+/**
+ * Start of a service day given the clock minutes of all trip starts: the end of the night
+ * gap. The gap that contains `boundaryMin` (03:00 by default) is used if it is at least
+ * `minGap` long (works for routes with few trips); otherwise the largest gap.
+ */
+export function serviceDayStartFrom(starts: number[], boundaryMin = 180, minGap = 120): number {
+  const uniq = [...new Set(starts.map((m) => ((m % DAY_MIN) + DAY_MIN) % DAY_MIN))].sort((a, b) => a - b);
+  if (uniq.length === 0) return boundaryMin;
+  for (let i = 0; i < uniq.length; i++) {
+    const cur = uniq[i]!;
+    const next = i + 1 < uniq.length ? uniq[i + 1]! : uniq[0]! + DAY_MIN;
+    const b = boundaryMin <= cur ? boundaryMin + DAY_MIN : boundaryMin;
+    if (cur < b && b <= next && next - cur >= minGap) return next % DAY_MIN;
+  }
+  return circularStart(uniq);
+}
+
 /** Unwrap clock minutes so that they are >= start (adds 1440 to values before start). */
 export function unwrapFrom(minute: number, start: number): number {
   const m = ((minute % DAY_MIN) + DAY_MIN) % DAY_MIN;

@@ -4,6 +4,7 @@ import { matchStopsToShape } from './shape-match';
 import {
   circularStart,
   DEFAULT_TZ,
+  serviceDayStartFrom,
   MIN_MS,
   parseClock,
   resolveServiceDate,
@@ -137,7 +138,7 @@ export function serviceDayStart(timetables: RawDirectionTimetable[]): number {
       if (mins.length) starts.push(circularStart(mins));
     }
   }
-  return circularStart(starts);
+  return serviceDayStartFrom(starts);
 }
 
 /** Turn the raw timetable of one route into prepared trips (all trips, live or not). */
