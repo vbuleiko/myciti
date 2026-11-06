@@ -251,6 +251,9 @@ export function MapView({ network, idx, tripsRef, engine, clockOffsetRef, filter
         : '') +
       state +
       `<div class="pp-row"><span class="pp-k">Отклонение</span><span>${delayText(v.est.delaySec)}</span></div>` +
+      (v.est.state === 'moving'
+        ? `<div class="pp-row"><span class="pp-k">Скорость</span><span>${Math.round(v.shownSpeedMps * 3.6)} км/ч <span class="pp-sched">(перегон ${Math.round(v.est.speedMps * 3.6)})</span></span></div>`
+        : '') +
       `<div class="pp-row"><span class="pp-k">Рейс</span><span>trip_id ${esc(t.tripId)}${v.mergedFrom ? ` (прибыл рейсом ${esc(v.mergedFrom.split(':')[1] ?? '')})` : ''}</span></div>` +
       `<div class="pp-row"><span class="pp-k">Данные</span><span>${ageText(n - t.fetchedAt)}</span></div>` +
       `<div class="pp-note">Позиция расчётная: интерполяция по времени прохождения остановок, не GPS.</div>` +

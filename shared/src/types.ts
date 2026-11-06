@@ -126,6 +126,8 @@ export interface VehicleEstimate {
   nextIdx: number;
   /** interpolated (fit - sched) at the current position, seconds */
   delaySec: number;
+  /** speed implied by the bracketing stop times, m/s (0 when waiting or arrived) */
+  speedMps: number;
 }
 
 export interface EngineOptions {

@@ -22,7 +22,15 @@ export function estimateVehicle(
 
   if (now < first.fit) {
     if (first.fit - now > opts.preDepartureMs) return null;
-    return { key: trip.key, state: 'waiting', dist: first.dist, prevIdx: 0, nextIdx: 0, delaySec: (first.fit - first.sched) / 1000 };
+    return {
+      key: trip.key,
+      state: 'waiting',
+      dist: first.dist,
+      prevIdx: 0,
+      nextIdx: 0,
+      delaySec: (first.fit - first.sched) / 1000,
+      speedMps: 0,
+    };
   }
   if (now >= last.fit) {
     if (now - last.fit > opts.postArrivalMs) return null;
@@ -33,6 +41,7 @@ export function estimateVehicle(
       prevIdx: n - 1,
       nextIdx: n - 1,
       delaySec: (last.fit - last.sched) / 1000,
+      speedMps: 0,
     };
   }
   // binary search: largest i with fit[i] <= now (now < last.fit so i < n - 1)
@@ -57,6 +66,7 @@ export function estimateVehicle(
     prevIdx: lo,
     nextIdx: lo + 1,
     delaySec: (da + f * (db - da)) / 1000,
+    speedMps: span > 0 ? Math.max(0, (b.dist - a.dist) / (span / 1000)) : 0,
   };
 }
 

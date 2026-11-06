@@ -6,3 +6,4 @@ export * from './robust-fit';
 export * from './trip';
 export * from './position';
 export * from './clock-sync';
+export * from './follower';

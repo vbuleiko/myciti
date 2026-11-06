@@ -126,6 +126,7 @@ export function registerApi(app: FastifyInstance, d: ApiDeps): { close: () => vo
           prevStop: { id: prev.stopId, name: prev.name, sched: prev.sched, time: prev.fit },
           nextStop: { id: next.stopId, name: next.name, sched: next.sched, time: next.fit },
           delaySec: Math.round(est.delaySec),
+          speedKmh: Math.round(est.speedMps * 3.6),
           suspect: trip.suspect,
           mergedFrom: mergedFrom ?? null,
           dataFetchedAt: trip.fetchedAt,
