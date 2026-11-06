@@ -135,6 +135,14 @@ describe('parseTimetablePage (fixtures 2026-11-06 ~15:16 SAST)', () => {
     expect(p.warnings).toEqual([]);
   });
 
+  it('213: single-direction loop route, timetable published as an object keyed by direction', () => {
+    const p = parseTimetablePage(fixture('route-213.html'), '213');
+    expect(p.directions).toHaveLength(1);
+    expect(p.directions[0]!.directionId).toBe(1);
+    expect(p.directions[0]!.trips.length).toBeGreaterThan(10);
+    expect(p.headsigns).toEqual([{ directionId: 1, headsign: '213 Table View' }]);
+  });
+
   it('rejects pages without a timetable', () => {
     expect(() => parseTimetablePage('<html><body>Maintenance</body></html>')).toThrow(/timetable/);
   });

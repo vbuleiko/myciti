@@ -44,8 +44,11 @@ function truthy(v: unknown): boolean {
 /** Parse a route timetable page (`var timetable`, `var directions`, `var page_url`). */
 export function parseTimetablePage(html: string, expectedRouteId?: string): ParsedTimetablePage {
   const warnings: string[] = [];
-  const tt = extractJsVar(html, 'timetable');
-  if (!Array.isArray(tt)) throw new Error('`timetable` is not an array (layout changed?)');
+  const ttRaw = extractJsVar(html, 'timetable');
+  // Normally an array of directions; routes with a single direction 1 (e.g. 213) come as an
+  // object keyed by direction id ({"1": {...}}), PHP-style.
+  const tt = Array.isArray(ttRaw) ? ttRaw : ttRaw && typeof ttRaw === 'object' ? Object.values(ttRaw) : null;
+  if (!tt) throw new Error('`timetable` is neither an array nor an object (layout changed?)');
 
   const directions: RawDirectionTimetable[] = [];
   for (const d of tt) {
