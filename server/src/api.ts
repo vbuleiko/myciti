@@ -13,6 +13,7 @@ import type { PoliteFetcher } from './http/fetcher';
 import type { RobotsGuard } from './http/robots';
 import { slowOriginFactor, type Poller } from './poller';
 import type { NetworkStore } from './stores/network-store';
+import type { ObservationLog } from './stores/observation-log';
 import { tripsInWindow, type RealtimeStore, type RouteSnapshot } from './stores/realtime-store';
 
 export interface ApiDeps {
@@ -23,6 +24,7 @@ export interface ApiDeps {
   poller: Poller;
   fetcher: PoliteFetcher;
   robots: RobotsGuard;
+  observations: ObservationLog | null;
   startedAt: number;
 }
 
@@ -275,6 +277,7 @@ export function registerApi(app: FastifyInstance, d: ApiDeps): { close: () => vo
       },
       robots: { url: d.robots.url, ...d.robots.status },
       fetcher: { ...fetcherStats, slowOriginFactor: Math.round(slowFactor * 100) / 100 },
+      observations: d.observations ? await d.observations.status() : { enabled: false },
       sseClients: clients.size,
       config: {
         routes: cfg.routes.length ? cfg.routes : 'all',
@@ -287,6 +290,7 @@ export function registerApi(app: FastifyInstance, d: ApiDeps): { close: () => vo
         slowOriginMs: cfg.slowOriginMs,
         maxDataAgeMin: cfg.maxDataAgeMin,
         maxSseClients: cfg.maxSseClients,
+        observationsKeepDays: cfg.observationsKeepDays,
       },
       routes,
     };

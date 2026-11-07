@@ -59,7 +59,11 @@ export class RealtimeStore extends EventEmitter {
   update(routeId: string, directions: RawDirectionTimetable[], fetchedAt: number, warnings: string[] = []): RouteSnapshot | null {
     this.raw.set(routeId, { fetchedAt, directions, warnings });
     const snap = this.prepare(routeId);
-    if (snap) this.emit('route', snap);
+    if (snap) {
+      this.emit('route', snap);
+      // unlike 'route', fired only for a fresh page (not when the network is re-prepared)
+      this.emit('polled', snap, directions);
+    }
     void this.persist(routeId);
     return snap;
   }

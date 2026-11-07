@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parse as parseDotenv } from 'dotenv';
 
 /** Load .env from the server dir and the repo root (server dir wins); real env vars win over both. */
@@ -69,6 +69,12 @@ export interface Config {
   backoffMaxSec: number;
   networkRefreshHours: number;
   dataDir: string;
+  /** append every change of a published stop time to a daily log (history for later analysis) */
+  observations: boolean;
+  /** directory of the observation log */
+  observationsDir: string;
+  /** delete observation files older than this many days (0 = keep forever) */
+  observationsKeepDays: number;
   suspectThresholdMin: number;
   preDepartureMin: number;
   postArrivalMin: number;
@@ -115,6 +121,9 @@ export function loadConfig(): Config {
     backoffMaxSec: num('BACKOFF_MAX_SEC', 1800, 60),
     networkRefreshHours: num('NETWORK_REFRESH_HOURS', 24, 1),
     dataDir: resolve(process.cwd(), str('DATA_DIR', './data')),
+    observations: bool('OBSERVATIONS', true),
+    observationsDir: resolve(process.cwd(), str('OBSERVATIONS_DIR', join(str('DATA_DIR', './data'), 'observations'))),
+    observationsKeepDays: num('OBSERVATIONS_KEEP_DAYS', 0, 0),
     suspectThresholdMin: num('SUSPECT_THRESHOLD_MIN', 30, 1),
     preDepartureMin: num('PRE_DEPARTURE_MIN', 5, 0),
     postArrivalMin: num('POST_ARRIVAL_MIN', 1, 0),

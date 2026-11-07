@@ -13,6 +13,7 @@
     "start": "pnpm --filter @myciti/server run start",
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck",
-    "verify": "pnpm --filter @myciti/server run verify"
+    "verify": "pnpm --filter @myciti/server run verify",
+    "observations": "pnpm --filter @myciti/server run observations"
   }
 }
