@@ -41,7 +41,9 @@ pnpm build && pnpm start
 
 Сервер находит собранную карту в `web/dist` рядом с собой и раздаёт её сам (`WEB_DIST`), карта на
 http://localhost:3000. Так проект живёт на старом ноутбуке: автозапуск через launchd и доступ из
-интернета описаны в [`docs/macos-server.md`](docs/macos-server.md).
+интернета описаны в [`docs/macos-server.md`](docs/macos-server.md). Если macOS на ноутбуке слишком
+старая для Node 22, рядом с ней ставится Linux Mint, а проект идёт через Docker и Tailscale:
+[`docs/linux-mint-server.md`](docs/linux-mint-server.md).
 
 Через Docker:
 
@@ -272,7 +274,7 @@ shared/   типы и движок: время/часовой пояс, геом
 server/   Fastify: parser/, http/ (fetcher, robots), stores/ (сеть, снимки, журнал наблюдений), poller.ts, api.ts,
           web.ts (раздача карты), observation-report.ts; scripts/verify.ts, scripts/observations.ts
 deploy/   macos/: агенты launchd и install.sh для ноутбука-сервера
-docs/     скриншот и инструкция по серверу на macOS
+docs/     скриншот и инструкции по серверу на старом ноутбуке (macOS, Linux Mint)
 web/      React + Vite + MapLibre GL (OpenFreeMap / OSM): анимация, панель фильтров, попапы
 fixtures/ снимки страниц сайта для тестов (ключ Google Maps из них вырезан)
 ```
