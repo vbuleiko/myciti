@@ -11,6 +11,7 @@ import { Poller } from './poller';
 import { NetworkStore } from './stores/network-store';
 import { ObservationLog } from './stores/observation-log';
 import { RealtimeStore, type RouteSnapshot } from './stores/realtime-store';
+import { registerWeb } from './web';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -36,7 +37,12 @@ async function main(): Promise<void> {
   app.addHook('onSend', async (_req, reply) => {
     reply.header('x-content-type-options', 'nosniff');
   });
-  app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: 'not found' }));
+  if (cfg.webDist) {
+    // one process serves the map and the API (no nginx): see docs/macos-server.md
+    await registerWeb(app, cfg.webDist);
+  } else {
+    app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: 'not found' }));
+  }
   app.setErrorHandler((err: FastifyError, req, reply) => {
     const status = err.statusCode && err.statusCode >= 400 ? err.statusCode : 500;
     if (status >= 500) req.log.error({ err }, 'request failed');
@@ -85,6 +91,7 @@ async function main(): Promise<void> {
 
   const api = registerApi(app, { cfg, engine, network, realtime, poller, fetcher, robots, observations, startedAt });
   await app.listen({ host: cfg.host, port: cfg.port });
+  app.log.info({ web: cfg.webDist ?? 'off', data: cfg.dataDir }, cfg.webDist ? 'serving the web map and the API' : 'serving the API only');
 
   // robots.txt: re-check daily, or every 10 minutes while it is unreachable
   const robotsLoop = async () => {

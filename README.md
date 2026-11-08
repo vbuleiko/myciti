@@ -33,6 +33,16 @@ pnpm dev
 Откройте http://localhost:5173. Vite проксирует `/api` на сервер `:3000`. Первый полный цикл опроса
 занимает около полутора минут, автобусы появляются по мере загрузки маршрутов.
 
+Без Docker, одним процессом (карта и API на одном порту):
+
+```bash
+pnpm build && pnpm start
+```
+
+Сервер находит собранную карту в `web/dist` рядом с собой и раздаёт её сам (`WEB_DIST`), карта на
+http://localhost:3000. Так проект живёт на старом ноутбуке: автозапуск через launchd и доступ из
+интернета описаны в [`docs/macos-server.md`](docs/macos-server.md).
+
 Через Docker:
 
 ```bash
@@ -260,7 +270,9 @@ origin и к тайлам OpenFreeMap. Оба контейнера работа�
 ```
 shared/   типы и движок: время/часовой пояс, геометрия, привязка к трассе, выпрямление времён, позиции
 server/   Fastify: parser/, http/ (fetcher, robots), stores/ (сеть, снимки, журнал наблюдений), poller.ts, api.ts,
-          observation-report.ts; scripts/verify.ts, scripts/observations.ts
+          web.ts (раздача карты), observation-report.ts; scripts/verify.ts, scripts/observations.ts
+deploy/   macos/: агенты launchd и install.sh для ноутбука-сервера
+docs/     скриншот и инструкция по серверу на macOS
 web/      React + Vite + MapLibre GL (OpenFreeMap / OSM): анимация, панель фильтров, попапы
 fixtures/ снимки страниц сайта для тестов (ключ Google Maps из них вырезан)
 ```

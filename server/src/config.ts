@@ -86,6 +86,20 @@ export interface Config {
   maxSseClients: number;
   /** believe X-Forwarded-* headers (only behind a reverse proxy you control) */
   trustProxy: boolean;
+  /** directory with the built web map to serve from this process (null = API only) */
+  webDist: string | null;
+}
+
+/**
+ * WEB_DIST: a path, "off" to serve the API only, or empty for auto-detection of a sibling
+ * `web/dist` build (the layout of a checkout: server/ next to web/).
+ */
+export function resolveWebDist(raw: string, cwd: string): string | null {
+  const v = raw.trim();
+  if (['off', 'false', '0', 'no', 'none'].includes(v.toLowerCase())) return null;
+  if (v) return resolve(cwd, v);
+  const sibling = resolve(cwd, '..', 'web', 'dist');
+  return existsSync(join(sibling, 'index.html')) ? sibling : null;
 }
 
 export function loadConfig(): Config {
@@ -132,5 +146,6 @@ export function loadConfig(): Config {
     corsOrigin: str('CORS_ORIGIN', '*'),
     maxSseClients: num('MAX_SSE_CLIENTS', 200, 1),
     trustProxy: bool('TRUST_PROXY', false),
+    webDist: resolveWebDist(str('WEB_DIST', ''), process.cwd()),
   };
 }

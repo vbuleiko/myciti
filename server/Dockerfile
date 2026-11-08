@@ -14,7 +14,7 @@ RUN BUNDLE_ALL=1 pnpm --filter @myciti/server run build
 FROM node:22-alpine
 WORKDIR /app
 # heap cap keeps the process inside the compose memory limit instead of being OOM-killed
-ENV NODE_ENV=production DATA_DIR=/data PORT=3000 NODE_OPTIONS=--max-old-space-size=384
+ENV NODE_ENV=production DATA_DIR=/data PORT=3000 WEB_DIST=off NODE_OPTIONS=--max-old-space-size=384
 COPY --from=build /app/server/dist ./dist
 RUN mkdir -p /data && chown node:node /data
 USER node

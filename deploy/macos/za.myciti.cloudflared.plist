@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: deploy/macos/install.sh fills in __CLOUDFLARED__ and __LOGS__.
+     A quick tunnel: no account, random https://....trycloudflare.com URL (changes on restart). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>za.myciti.cloudflared</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__CLOUDFLARED__</string>
+    <string>tunnel</string>
+    <string>--no-autoupdate</string>
+    <string>--url</string>
+    <string>http://127.0.0.1:3000</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>StandardOutPath</key>
+  <string>__LOGS__/cloudflared.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOGS__/cloudflared.log</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
